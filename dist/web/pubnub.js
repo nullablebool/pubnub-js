@@ -1781,6 +1781,19 @@
 	    return encodeURIComponent(input).replace(/[!~*'()]/g, (x) => `%${x.charCodeAt(0).toString(16).toUpperCase()}`);
 	};
 	/**
+	 * Percent-encode list of names (channels).
+	 *
+	 * @param names - List of names which should be encoded.
+	 *
+	 * @param [defaultString] - String which should be used in case if {@link names} is empty.
+	 *
+	 * @returns String which contains encoded names joined by non-encoded `,`.
+	 */
+	const encodeNames = (names, defaultString) => {
+	    const encodedNames = names.map((name) => encodeString(name));
+	    return encodedNames.length ? encodedNames.join(',') : defaultString !== null && defaultString !== void 0 ? defaultString : '';
+	};
+	/**
 	 * Transform query key / value pairs to the string.
 	 *
 	 * @param query - Key / value pairs of the request query parameters.
@@ -2663,6 +2676,483 @@
 	}
 
 	/**
+	 * Subscription reconnection-manager.
+	 *
+	 * **Note:** Reconnection manger rely on legacy time-based availability check.
+	 */
+	/**
+	 * Network "discovery" manager.
+	 *
+	 * Manager perform periodic `time` API calls to identify network availability.
+	 *
+	 * @internal
+	 */
+	class ReconnectionManager {
+	    constructor(time) {
+	        this.time = time;
+	    }
+	    /**
+	     * Configure reconnection handler.
+	     *
+	     * @param callback - Successful availability check notify callback.
+	     */
+	    onReconnect(callback) {
+	        this.callback = callback;
+	    }
+	    /**
+	     * Start periodic "availability" check.
+	     */
+	    startPolling() {
+	        this.timeTimer = setInterval(() => this.callTime(), 3000);
+	    }
+	    /**
+	     * Stop periodic "availability" check.
+	     */
+	    stopPolling() {
+	        if (this.timeTimer)
+	            clearInterval(this.timeTimer);
+	        this.timeTimer = null;
+	    }
+	    callTime() {
+	        this.time((status) => {
+	            if (!status.error) {
+	                this.stopPolling();
+	                if (this.callback)
+	                    this.callback();
+	            }
+	        });
+	    }
+	}
+
+	/*       */
+
+	const hashCode = (payload) => {
+	  let hash = 0;
+	  if (payload.length === 0) return hash;
+	  for (let i = 0; i < payload.length; i += 1) {
+	    const character = payload.charCodeAt(i);
+	    hash = (hash << 5) - hash + character; // eslint-disable-line
+	    hash = hash & hash; // eslint-disable-line
+	  }
+	  return hash;
+	};
+
+	/**
+	 * Real-time events deduplication manager.
+	 *
+	 * @internal
+	 */
+	class DedupingManager {
+	  _config;
+
+	  hashHistory;
+
+	  constructor({ config }) {
+	    this.hashHistory = [];
+	    this._config = config;
+	  }
+
+	  getKey(message) {
+	    const hashedPayload = hashCode(JSON.stringify(message.message)).toString();
+	    const timetoken = message.timetoken;
+	    return `${timetoken}-${hashedPayload}`;
+	  }
+
+	  isDuplicate(message) {
+	    return this.hashHistory.includes(this.getKey(message));
+	  }
+
+	  addEntry(message) {
+	    if (this.hashHistory.length >= this._config.maximumCacheSize) {
+	      this.hashHistory.shift();
+	    }
+
+	    this.hashHistory.push(this.getKey(message));
+	  }
+
+	  clearHistory() {
+	    this.hashHistory = [];
+	  }
+	}
+
+	/**
+	 * Subscription manager module.
+	 */
+	/**
+	 * Subscription loop manager.
+	 *
+	 * @internal
+	 */
+	class SubscriptionManager {
+	    constructor(configuration, listenerManager, eventEmitter, subscribeCall, heartbeatCall, leaveCall, time) {
+	        this.configuration = configuration;
+	        this.listenerManager = listenerManager;
+	        this.eventEmitter = eventEmitter;
+	        this.subscribeCall = subscribeCall;
+	        this.heartbeatCall = heartbeatCall;
+	        this.leaveCall = leaveCall;
+	        this.reconnectionManager = new ReconnectionManager(time);
+	        this.dedupingManager = new DedupingManager({ config: this.configuration });
+	        this.heartbeatChannelGroups = {};
+	        this.heartbeatChannels = {};
+	        this.presenceChannelGroups = {};
+	        this.presenceChannels = {};
+	        this.heartbeatTimer = null;
+	        this.presenceState = {};
+	        this.pendingChannelGroupSubscriptions = new Set();
+	        this.pendingChannelSubscriptions = new Set();
+	        this.channelGroups = {};
+	        this.channels = {};
+	        this.currentTimetoken = '0';
+	        this.lastTimetoken = '0';
+	        this.storedTimetoken = null;
+	        this.subscriptionStatusAnnounced = false;
+	        this.isOnline = true;
+	    }
+	    // region Information
+	    get subscribedChannels() {
+	        return Object.keys(this.channels);
+	    }
+	    get subscribedChannelGroups() {
+	        return Object.keys(this.channelGroups);
+	    }
+	    get abort() {
+	        return this._subscribeAbort;
+	    }
+	    set abort(call) {
+	        this._subscribeAbort = call;
+	    }
+	    // endregion
+	    // region Subscription
+	    disconnect() {
+	        this.stopSubscribeLoop();
+	        this.stopHeartbeatTimer();
+	        this.reconnectionManager.stopPolling();
+	    }
+	    reconnect() {
+	        this.startSubscribeLoop();
+	        this.startHeartbeatTimer();
+	    }
+	    /**
+	     * Update channels and groups used in subscription loop.
+	     *
+	     * @param parameters - Subscribe configuration parameters.
+	     */
+	    subscribe(parameters) {
+	        const { channels, channelGroups, timetoken, withPresence = false, withHeartbeats = false } = parameters;
+	        if (timetoken) {
+	            this.lastTimetoken = this.currentTimetoken;
+	            this.currentTimetoken = timetoken;
+	        }
+	        if (this.currentTimetoken !== '0' && this.currentTimetoken !== 0) {
+	            this.storedTimetoken = this.currentTimetoken;
+	            this.currentTimetoken = 0;
+	        }
+	        channels === null || channels === void 0 ? void 0 : channels.forEach((channel) => {
+	            this.pendingChannelSubscriptions.add(channel);
+	            this.channels[channel] = {};
+	            if (withPresence)
+	                this.presenceChannels[channel] = {};
+	            if (withHeartbeats || this.configuration.getHeartbeatInterval())
+	                this.heartbeatChannels[channel] = {};
+	        });
+	        channelGroups === null || channelGroups === void 0 ? void 0 : channelGroups.forEach((group) => {
+	            this.pendingChannelGroupSubscriptions.add(group);
+	            this.channelGroups[group] = {};
+	            if (withPresence)
+	                this.presenceChannelGroups[group] = {};
+	            if (withHeartbeats || this.configuration.getHeartbeatInterval())
+	                this.heartbeatChannelGroups[group] = {};
+	        });
+	        this.subscriptionStatusAnnounced = false;
+	        this.reconnect();
+	    }
+	    unsubscribe(parameters, isOffline) {
+	        let { channels, channelGroups } = parameters;
+	        const actualChannelGroups = new Set();
+	        const actualChannels = new Set();
+	        channels === null || channels === void 0 ? void 0 : channels.forEach((channel) => {
+	            if (channel in this.channels) {
+	                delete this.channels[channel];
+	                actualChannels.add(channel);
+	                if (channel in this.heartbeatChannels)
+	                    delete this.heartbeatChannels[channel];
+	            }
+	            if (channel in this.presenceState)
+	                delete this.presenceState[channel];
+	            if (channel in this.presenceChannels) {
+	                delete this.presenceChannels[channel];
+	                actualChannels.add(channel);
+	            }
+	        });
+	        channelGroups === null || channelGroups === void 0 ? void 0 : channelGroups.forEach((group) => {
+	            if (group in this.channelGroups) {
+	                delete this.channelGroups[group];
+	                actualChannelGroups.add(group);
+	                if (group in this.heartbeatChannelGroups)
+	                    delete this.heartbeatChannelGroups[group];
+	            }
+	            if (group in this.presenceState)
+	                delete this.presenceState[group];
+	            if (group in this.presenceChannelGroups) {
+	                delete this.presenceChannelGroups[group];
+	                actualChannelGroups.add(group);
+	            }
+	        });
+	        // There is no need to unsubscribe to empty list of data sources.
+	        if (actualChannels.size === 0 && actualChannelGroups.size === 0)
+	            return;
+	        if (this.configuration.suppressLeaveEvents === false && !isOffline) {
+	            channelGroups = Array.from(actualChannelGroups);
+	            channels = Array.from(actualChannels);
+	            this.leaveCall({ channels, channelGroups }, (status) => {
+	                const { error } = status, restOfStatus = __rest(status, ["error"]);
+	                let errorMessage;
+	                if (error) {
+	                    if (status.errorData &&
+	                        typeof status.errorData === 'object' &&
+	                        'message' in status.errorData &&
+	                        typeof status.errorData.message === 'string')
+	                        errorMessage = status.errorData.message;
+	                    else if ('message' in status && typeof status.message === 'string')
+	                        errorMessage = status.message;
+	                }
+	                this.listenerManager.announceStatus(Object.assign(Object.assign({}, restOfStatus), { error: errorMessage !== null && errorMessage !== void 0 ? errorMessage : false, affectedChannels: channels, affectedChannelGroups: channelGroups, currentTimetoken: this.currentTimetoken, lastTimetoken: this.lastTimetoken }));
+	            });
+	        }
+	        if (Object.keys(this.channels).length === 0 &&
+	            Object.keys(this.presenceChannels).length === 0 &&
+	            Object.keys(this.channelGroups).length === 0 &&
+	            Object.keys(this.presenceChannelGroups).length === 0) {
+	            this.lastTimetoken = 0;
+	            this.currentTimetoken = 0;
+	            this.storedTimetoken = null;
+	            this.region = null;
+	            this.reconnectionManager.stopPolling();
+	        }
+	        this.reconnect();
+	    }
+	    unsubscribeAll(isOffline) {
+	        this.unsubscribe({
+	            channels: this.subscribedChannels,
+	            channelGroups: this.subscribedChannelGroups,
+	        }, isOffline);
+	    }
+	    startSubscribeLoop() {
+	        this.stopSubscribeLoop();
+	        const channelGroups = [...Object.keys(this.channelGroups)];
+	        const channels = [...Object.keys(this.channels)];
+	        Object.keys(this.presenceChannelGroups).forEach((group) => channelGroups.push(`${group}-pnpres`));
+	        Object.keys(this.presenceChannels).forEach((channel) => channels.push(`${channel}-pnpres`));
+	        // There is no need to start subscription loop for empty list of data sources.
+	        if (channels.length === 0 && channelGroups.length === 0)
+	            return;
+	        this.subscribeCall({
+	            channels,
+	            channelGroups,
+	            state: this.presenceState,
+	            heartbeat: this.configuration.getPresenceTimeout(),
+	            timetoken: this.currentTimetoken,
+	            region: this.region !== null ? this.region : undefined,
+	            filterExpression: this.configuration.filterExpression,
+	        }, (status, result) => {
+	            this.processSubscribeResponse(status, result);
+	        });
+	    }
+	    stopSubscribeLoop() {
+	        if (this._subscribeAbort) {
+	            this._subscribeAbort();
+	            this._subscribeAbort = null;
+	        }
+	    }
+	    /**
+	     * Process subscribe REST API endpoint response.
+	     */
+	    processSubscribeResponse(status, result) {
+	        if (status.error) {
+	            // Ignore aborted request.
+	            if ((typeof status.errorData === 'object' &&
+	                'name' in status.errorData &&
+	                status.errorData.name === 'AbortError') ||
+	                status.category === StatusCategory$1.PNCancelledCategory)
+	                return;
+	            if (status.category === StatusCategory$1.PNTimeoutCategory) {
+	                this.startSubscribeLoop();
+	            }
+	            else if (status.category === StatusCategory$1.PNNetworkIssuesCategory) {
+	                this.disconnect();
+	                if (status.error && this.configuration.autoNetworkDetection && this.isOnline) {
+	                    this.isOnline = false;
+	                    this.listenerManager.announceNetworkDown();
+	                }
+	                this.reconnectionManager.onReconnect(() => {
+	                    if (this.configuration.autoNetworkDetection && !this.isOnline) {
+	                        this.isOnline = true;
+	                        this.listenerManager.announceNetworkUp();
+	                    }
+	                    this.reconnect();
+	                    this.subscriptionStatusAnnounced = true;
+	                    const reconnectedAnnounce = {
+	                        category: StatusCategory$1.PNReconnectedCategory,
+	                        operation: status.operation,
+	                        lastTimetoken: this.lastTimetoken,
+	                        currentTimetoken: this.currentTimetoken,
+	                    };
+	                    this.listenerManager.announceStatus(reconnectedAnnounce);
+	                });
+	                this.reconnectionManager.startPolling();
+	                this.listenerManager.announceStatus(status);
+	            }
+	            else if (status.category === StatusCategory$1.PNBadRequestCategory) {
+	                this.stopHeartbeatTimer();
+	                this.listenerManager.announceStatus(status);
+	            }
+	            else {
+	                this.listenerManager.announceStatus(status);
+	            }
+	            return;
+	        }
+	        if (this.storedTimetoken) {
+	            this.currentTimetoken = this.storedTimetoken;
+	            this.storedTimetoken = null;
+	        }
+	        else {
+	            this.lastTimetoken = this.currentTimetoken;
+	            this.currentTimetoken = result.cursor.timetoken;
+	        }
+	        if (!this.subscriptionStatusAnnounced) {
+	            const connected = {
+	                category: StatusCategory$1.PNConnectedCategory,
+	                operation: status.operation,
+	                affectedChannels: Array.from(this.pendingChannelSubscriptions),
+	                subscribedChannels: this.subscribedChannels,
+	                affectedChannelGroups: Array.from(this.pendingChannelGroupSubscriptions),
+	                lastTimetoken: this.lastTimetoken,
+	                currentTimetoken: this.currentTimetoken,
+	            };
+	            this.subscriptionStatusAnnounced = true;
+	            this.listenerManager.announceStatus(connected);
+	            // Clear pending channels and groups.
+	            this.pendingChannelGroupSubscriptions.clear();
+	            this.pendingChannelSubscriptions.clear();
+	        }
+	        const { messages } = result;
+	        const { requestMessageCountThreshold, dedupeOnSubscribe } = this.configuration;
+	        if (requestMessageCountThreshold && messages.length >= requestMessageCountThreshold) {
+	            this.listenerManager.announceStatus({
+	                category: StatusCategory$1.PNRequestMessageCountExceededCategory,
+	                operation: status.operation,
+	            });
+	        }
+	        try {
+	            messages.forEach((message) => {
+	                if (dedupeOnSubscribe) {
+	                    if (this.dedupingManager.isDuplicate(message.data))
+	                        return;
+	                    this.dedupingManager.addEntry(message.data);
+	                }
+	                this.eventEmitter.emitEvent(message);
+	            });
+	        }
+	        catch (e) {
+	            const errorStatus = {
+	                error: true,
+	                category: StatusCategory$1.PNUnknownCategory,
+	                errorData: e,
+	                statusCode: 0,
+	            };
+	            this.listenerManager.announceStatus(errorStatus);
+	        }
+	        this.region = result.cursor.region;
+	        this.startSubscribeLoop();
+	    }
+	    // endregion
+	    // region Presence
+	    /**
+	     * Update `uuid` state which should be sent with subscribe request.
+	     *
+	     * @param parameters - Channels and groups with state which should be associated to `uuid`.
+	     */
+	    setState(parameters) {
+	        const { state, channels, channelGroups } = parameters;
+	        channels === null || channels === void 0 ? void 0 : channels.forEach((channel) => channel in this.channels && (this.presenceState[channel] = state));
+	        channelGroups === null || channelGroups === void 0 ? void 0 : channelGroups.forEach((group) => group in this.channelGroups && (this.presenceState[group] = state));
+	    }
+	    /**
+	     * Manual presence management.
+	     *
+	     * @param parameters - Desired presence state for provided list of channels and groups.
+	     */
+	    changePresence(parameters) {
+	        const { connected, channels, channelGroups } = parameters;
+	        if (connected) {
+	            channels === null || channels === void 0 ? void 0 : channels.forEach((channel) => (this.heartbeatChannels[channel] = {}));
+	            channelGroups === null || channelGroups === void 0 ? void 0 : channelGroups.forEach((group) => (this.heartbeatChannelGroups[group] = {}));
+	        }
+	        else {
+	            channels === null || channels === void 0 ? void 0 : channels.forEach((channel) => {
+	                if (channel in this.heartbeatChannels)
+	                    delete this.heartbeatChannels[channel];
+	            });
+	            channelGroups === null || channelGroups === void 0 ? void 0 : channelGroups.forEach((group) => {
+	                if (group in this.heartbeatChannelGroups)
+	                    delete this.heartbeatChannelGroups[group];
+	            });
+	            if (this.configuration.suppressLeaveEvents === false) {
+	                this.leaveCall({ channels, channelGroups }, (status) => this.listenerManager.announceStatus(status));
+	            }
+	        }
+	        this.reconnect();
+	    }
+	    startHeartbeatTimer() {
+	        this.stopHeartbeatTimer();
+	        const heartbeatInterval = this.configuration.getHeartbeatInterval();
+	        if (!heartbeatInterval || heartbeatInterval === 0)
+	            return;
+	        this.sendHeartbeat();
+	        this.heartbeatTimer = setInterval(() => this.sendHeartbeat(), heartbeatInterval * 1000);
+	    }
+	    /**
+	     * Stop heartbeat.
+	     *
+	     * Stop timer which trigger {@link HeartbeatRequest} sending with configured presence intervals.
+	     */
+	    stopHeartbeatTimer() {
+	        if (!this.heartbeatTimer)
+	            return;
+	        clearInterval(this.heartbeatTimer);
+	        this.heartbeatTimer = null;
+	    }
+	    /**
+	     * Send heartbeat request.
+	     */
+	    sendHeartbeat() {
+	        const heartbeatChannelGroups = Object.keys(this.heartbeatChannelGroups);
+	        const heartbeatChannels = Object.keys(this.heartbeatChannels);
+	        // There is no need to start heartbeat loop if there is no channels and groups to use.
+	        if (heartbeatChannels.length === 0 && heartbeatChannelGroups.length === 0)
+	            return;
+	        this.heartbeatCall({
+	            channels: heartbeatChannels,
+	            channelGroups: heartbeatChannelGroups,
+	            heartbeat: this.configuration.getPresenceTimeout(),
+	            state: this.presenceState,
+	        }, (status) => {
+	            if (status.error && this.configuration.announceFailedHeartbeats)
+	                this.listenerManager.announceStatus(status);
+	            if (status.error && this.configuration.autoNetworkDetection && this.isOnline) {
+	                this.isOnline = false;
+	                this.disconnect();
+	                this.listenerManager.announceNetworkDown();
+	                this.reconnect();
+	            }
+	            if (!status.error && this.configuration.announceSuccessfulHeartbeats)
+	                this.listenerManager.announceStatus(status);
+	        });
+	    }
+	}
+
+	/**
 	 * Base REST API request class.
 	 *
 	 * @internal
@@ -3067,6 +3557,14 @@
 	/**
 	 * Subscription REST API module.
 	 */
+	// --------------------------------------------------------
+	// ---------------------- Defaults ------------------------
+	// --------------------------------------------------------
+	// region Defaults
+	/**
+	 * Whether should subscribe to channels / groups presence announcements or not.
+	 */
+	const WITH_PRESENCE = false;
 	// endregion
 	// --------------------------------------------------------
 	// ------------------------ Types -------------------------
@@ -3106,6 +3604,284 @@
 	     */
 	    PubNubEventType[PubNubEventType["Files"] = 4] = "Files";
 	})(PubNubEventType || (PubNubEventType = {}));
+	// endregion
+	/**
+	 * Base subscription request implementation.
+	 *
+	 * Subscription request used in small variations in two cases:
+	 * - subscription manager
+	 * - event engine
+	 *
+	 * @internal
+	 */
+	class BaseSubscribeRequest extends AbstractRequest {
+	    constructor(parameters) {
+	        var _a, _b, _c;
+	        var _d, _e, _f;
+	        super({ cancellable: true });
+	        this.parameters = parameters;
+	        // Apply default request parameters.
+	        (_a = (_d = this.parameters).withPresence) !== null && _a !== void 0 ? _a : (_d.withPresence = WITH_PRESENCE);
+	        (_b = (_e = this.parameters).channelGroups) !== null && _b !== void 0 ? _b : (_e.channelGroups = []);
+	        (_c = (_f = this.parameters).channels) !== null && _c !== void 0 ? _c : (_f.channels = []);
+	    }
+	    operation() {
+	        return RequestOperation$1.PNSubscribeOperation;
+	    }
+	    validate() {
+	        const { keySet: { subscribeKey }, channels, channelGroups, } = this.parameters;
+	        if (!subscribeKey)
+	            return 'Missing Subscribe Key';
+	        if (!channels && !channelGroups)
+	            return '`channels` and `channelGroups` both should not be empty';
+	    }
+	    parse(response) {
+	        return __awaiter(this, void 0, void 0, function* () {
+	            let serviceResponse;
+	            try {
+	                const json = AbstractRequest.decoder.decode(response.body);
+	                const parsedJson = JSON.parse(json);
+	                serviceResponse = parsedJson;
+	            }
+	            catch (error) {
+	                console.error('Error parsing JSON response:', error);
+	            }
+	            if (!serviceResponse) {
+	                throw new PubNubError('Service response error, check status for details', createValidationError('Unable to deserialize service response'));
+	            }
+	            const events = serviceResponse.m.map((envelope) => {
+	                let { e: eventType } = envelope;
+	                // Resolve missing event type.
+	                eventType !== null && eventType !== void 0 ? eventType : (eventType = envelope.c.endsWith('-pnpres') ? PubNubEventType.Presence : PubNubEventType.Message);
+	                // Check whether payload is string (potentially encrypted data).
+	                if (eventType != PubNubEventType.Signal && typeof envelope.d === 'string') {
+	                    if (eventType == PubNubEventType.Message) {
+	                        return {
+	                            type: PubNubEventType.Message,
+	                            data: this.messageFromEnvelope(envelope),
+	                        };
+	                    }
+	                    return {
+	                        type: PubNubEventType.Files,
+	                        data: this.fileFromEnvelope(envelope),
+	                    };
+	                }
+	                else if (eventType == PubNubEventType.Message) {
+	                    return {
+	                        type: PubNubEventType.Message,
+	                        data: this.messageFromEnvelope(envelope),
+	                    };
+	                }
+	                else if (eventType === PubNubEventType.Presence) {
+	                    return {
+	                        type: PubNubEventType.Presence,
+	                        data: this.presenceEventFromEnvelope(envelope),
+	                    };
+	                }
+	                else if (eventType == PubNubEventType.Signal) {
+	                    return {
+	                        type: PubNubEventType.Signal,
+	                        data: this.signalFromEnvelope(envelope),
+	                    };
+	                }
+	                else if (eventType === PubNubEventType.AppContext) {
+	                    return {
+	                        type: PubNubEventType.AppContext,
+	                        data: this.appContextFromEnvelope(envelope),
+	                    };
+	                }
+	                else if (eventType === PubNubEventType.MessageAction) {
+	                    return {
+	                        type: PubNubEventType.MessageAction,
+	                        data: this.messageActionFromEnvelope(envelope),
+	                    };
+	                }
+	                return {
+	                    type: PubNubEventType.Files,
+	                    data: this.fileFromEnvelope(envelope),
+	                };
+	            });
+	            return {
+	                cursor: { timetoken: serviceResponse.t.t, region: serviceResponse.t.r },
+	                messages: events,
+	            };
+	        });
+	    }
+	    get headers() {
+	        return { accept: 'text/javascript' };
+	    }
+	    // --------------------------------------------------------
+	    // ------------------ Envelope parsing --------------------
+	    // --------------------------------------------------------
+	    // region Envelope parsing
+	    presenceEventFromEnvelope(envelope) {
+	        const { d: payload } = envelope;
+	        const [channel, subscription] = this.subscriptionChannelFromEnvelope(envelope);
+	        // Clean up channel and subscription name from presence suffix.
+	        const trimmedChannel = channel.replace('-pnpres', '');
+	        // Backward compatibility with deprecated properties.
+	        const actualChannel = subscription !== null ? trimmedChannel : null;
+	        const subscribedChannel = subscription !== null ? subscription : trimmedChannel;
+	        if (typeof payload !== 'string' && 'data' in payload) {
+	            // @ts-expect-error This is `state-change` object which should have `state` field.
+	            payload['state'] = payload.data;
+	            delete payload.data;
+	        }
+	        return Object.assign({ channel: trimmedChannel, subscription,
+	            actualChannel,
+	            subscribedChannel, timetoken: envelope.p.t }, payload);
+	    }
+	    messageFromEnvelope(envelope) {
+	        const [channel, subscription] = this.subscriptionChannelFromEnvelope(envelope);
+	        const [message, decryptionError] = this.decryptedData(envelope.d);
+	        // Backward compatibility with deprecated properties.
+	        const actualChannel = subscription !== null ? channel : null;
+	        const subscribedChannel = subscription !== null ? subscription : channel;
+	        // Basic message event payload.
+	        const event = {
+	            channel,
+	            subscription,
+	            actualChannel,
+	            subscribedChannel,
+	            timetoken: envelope.p.t,
+	            publisher: envelope.i,
+	            message,
+	        };
+	        if (envelope.u)
+	            event.userMetadata = envelope.u;
+	        if (decryptionError)
+	            event.error = decryptionError;
+	        return event;
+	    }
+	    signalFromEnvelope(envelope) {
+	        const [channel, subscription] = this.subscriptionChannelFromEnvelope(envelope);
+	        const event = {
+	            channel,
+	            subscription,
+	            timetoken: envelope.p.t,
+	            publisher: envelope.i,
+	            message: envelope.d,
+	        };
+	        if (envelope.u)
+	            event.userMetadata = envelope.u;
+	        return event;
+	    }
+	    messageActionFromEnvelope(envelope) {
+	        const [channel, subscription] = this.subscriptionChannelFromEnvelope(envelope);
+	        const action = envelope.d;
+	        return {
+	            channel,
+	            subscription,
+	            timetoken: envelope.p.t,
+	            publisher: envelope.i,
+	            event: action.event,
+	            data: Object.assign(Object.assign({}, action.data), { uuid: envelope.i }),
+	        };
+	    }
+	    appContextFromEnvelope(envelope) {
+	        const [channel, subscription] = this.subscriptionChannelFromEnvelope(envelope);
+	        const object = envelope.d;
+	        return {
+	            channel,
+	            subscription,
+	            timetoken: envelope.p.t,
+	            message: object,
+	        };
+	    }
+	    fileFromEnvelope(envelope) {
+	        const [channel, subscription] = this.subscriptionChannelFromEnvelope(envelope);
+	        const [file, decryptionError] = this.decryptedData(envelope.d);
+	        let errorMessage = decryptionError;
+	        // Basic file event payload.
+	        const event = {
+	            channel,
+	            subscription,
+	            timetoken: envelope.p.t,
+	            publisher: envelope.i,
+	        };
+	        if (envelope.u)
+	            event.userMetadata = envelope.u;
+	        if (!file)
+	            errorMessage !== null && errorMessage !== void 0 ? errorMessage : (errorMessage = `File information payload is missing.`);
+	        else if (typeof file === 'string')
+	            errorMessage !== null && errorMessage !== void 0 ? errorMessage : (errorMessage = `Unexpected file information payload data type.`);
+	        else {
+	            event.message = file.message;
+	            if (file.file) {
+	                event.file = {
+	                    id: file.file.id,
+	                    name: file.file.name,
+	                    url: this.parameters.getFileUrl({ id: file.file.id, name: file.file.name, channel }),
+	                };
+	            }
+	        }
+	        if (errorMessage)
+	            event.error = errorMessage;
+	        return event;
+	    }
+	    // endregion
+	    subscriptionChannelFromEnvelope(envelope) {
+	        return [envelope.c, envelope.b === undefined ? envelope.c : envelope.b];
+	    }
+	    /**
+	     * Decrypt provided `data`.
+	     *
+	     * @param [data] - Message or file information which should be decrypted if possible.
+	     *
+	     * @returns Tuple with decrypted data and decryption error (if any).
+	     */
+	    decryptedData(data) {
+	        if (!this.parameters.crypto || typeof data !== 'string')
+	            return [data, undefined];
+	        let payload;
+	        let error;
+	        try {
+	            const decryptedData = this.parameters.crypto.decrypt(data);
+	            payload =
+	                decryptedData instanceof ArrayBuffer
+	                    ? JSON.parse(SubscribeRequest.decoder.decode(decryptedData))
+	                    : decryptedData;
+	        }
+	        catch (err) {
+	            payload = null;
+	            error = `Error while decrypting message content: ${err.message}`;
+	        }
+	        return [(payload !== null && payload !== void 0 ? payload : data), error];
+	    }
+	}
+	/**
+	 * Subscribe request.
+	 *
+	 * @internal
+	 */
+	class SubscribeRequest extends BaseSubscribeRequest {
+	    get path() {
+	        var _a;
+	        const { keySet: { subscribeKey }, channels, } = this.parameters;
+	        return `/v2/subscribe/${subscribeKey}/${encodeNames((_a = channels === null || channels === void 0 ? void 0 : channels.sort()) !== null && _a !== void 0 ? _a : [], ',')}/0`;
+	    }
+	    get queryParameters() {
+	        const { channelGroups, filterExpression, heartbeat, state, timetoken, region } = this.parameters;
+	        const query = {};
+	        if (channelGroups && channelGroups.length > 0)
+	            query['channel-group'] = channelGroups.sort().join(',');
+	        if (filterExpression && filterExpression.length > 0)
+	            query['filter-expr'] = filterExpression;
+	        if (heartbeat)
+	            query.heartbeat = heartbeat;
+	        if (state && Object.keys(state).length > 0)
+	            query['state'] = JSON.stringify(state);
+	        if (timetoken !== undefined && typeof timetoken === 'string') {
+	            if (timetoken.length > 0 && timetoken !== '0')
+	                query['tt'] = timetoken;
+	        }
+	        else if (timetoken !== undefined && timetoken > 0)
+	            query['tt'] = timetoken;
+	        if (region)
+	            query['tr'] = region;
+	        return query;
+	    }
+	}
 
 	/**
 	 * Real-time events' emitter.
@@ -4036,7 +4812,9 @@
 	                throw new Error('Event Engine error: subscription event engine module disabled');
 	            }
 	            else {
-	                throw new Error('Subscription Manager error: subscription manager module disabled');
+	                {
+	                    this.subscriptionManager = new SubscriptionManager(this._configuration, this.listenerManager, this.eventEmitter, this.makeSubscribe.bind(this), this.heartbeat.bind(this), this.makeUnsubscribe.bind(this), this.time.bind(this));
+	                }
 	            }
 	        }
 	    }
@@ -4552,7 +5330,27 @@
 	     * @param callback - Request completion handler callback.
 	     */
 	    makeSubscribe(parameters, callback) {
-	        throw new Error('Subscription error: subscription manager module disabled');
+	        {
+	            const request = new SubscribeRequest(Object.assign(Object.assign({}, parameters), { keySet: this._configuration.keySet, crypto: this._configuration.getCryptoModule(), getFileUrl: this.getFileUrl.bind(this) }));
+	            this.sendRequest(request, (status, result) => {
+	                var _a;
+	                if (this.subscriptionManager && ((_a = this.subscriptionManager.abort) === null || _a === void 0 ? void 0 : _a.identifier) === request.requestIdentifier)
+	                    this.subscriptionManager.abort = null;
+	                callback(status, result);
+	            });
+	            /**
+	             * Allow subscription cancellation.
+	             *
+	             * **Note:** Had to be done after scheduling because transport provider return cancellation
+	             * controller only when schedule new request.
+	             */
+	            if (this.subscriptionManager) {
+	                // Creating identifiable abort caller.
+	                const callableAbort = () => request.abort();
+	                callableAbort.identifier = request.requestIdentifier;
+	                this.subscriptionManager.abort = callableAbort;
+	            }
+	        }
 	    }
 	    /**
 	     * Unsubscribe from specified channels and groups real-time events.
@@ -4791,7 +5589,8 @@
 	     * @param parameters - Desired presence state for provided list of channels and groups.
 	     */
 	    presence(parameters) {
-	        throw new Error('Change UUID presence error: subscription manager module disabled');
+	        var _a;
+	        (_a = this.subscriptionManager) === null || _a === void 0 ? void 0 : _a.changePresence(parameters);
 	    }
 	    // endregion
 	    // region Heartbeat
