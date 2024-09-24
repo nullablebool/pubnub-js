@@ -4677,6 +4677,351 @@
 	    });
 	});
 
+	/**
+	 * Get Presence State REST API module.
+	 */
+	// endregion
+	/**
+	 * Get `uuid` presence state request.
+	 *
+	 * @internal
+	 */
+	class GetPresenceStateRequest extends AbstractRequest {
+	    constructor(parameters) {
+	        var _a, _b;
+	        var _c, _d;
+	        super();
+	        this.parameters = parameters;
+	        // Apply defaults.
+	        (_a = (_c = this.parameters).channels) !== null && _a !== void 0 ? _a : (_c.channels = []);
+	        (_b = (_d = this.parameters).channelGroups) !== null && _b !== void 0 ? _b : (_d.channelGroups = []);
+	    }
+	    operation() {
+	        return RequestOperation$1.PNGetStateOperation;
+	    }
+	    validate() {
+	        const { keySet: { subscribeKey }, channels, channelGroups, } = this.parameters;
+	        if (!subscribeKey)
+	            return 'Missing Subscribe Key';
+	    }
+	    parse(response) {
+	        return __awaiter(this, void 0, void 0, function* () {
+	            const serviceResponse = this.deserializeResponse(response);
+	            if (!serviceResponse) {
+	                throw new PubNubError('Service response error, check status for details', createValidationError('Unable to deserialize service response'));
+	            }
+	            else if (serviceResponse.status >= 400)
+	                throw PubNubAPIError.create(response);
+	            const { channels = [], channelGroups = [] } = this.parameters;
+	            const state = { channels: {} };
+	            if (channels.length === 1 && channelGroups.length === 0)
+	                state.channels[channels[0]] = serviceResponse.payload;
+	            else
+	                state.channels = serviceResponse.payload;
+	            return state;
+	        });
+	    }
+	    get path() {
+	        const { keySet: { subscribeKey }, uuid, channels, } = this.parameters;
+	        return `/v2/presence/sub-key/${subscribeKey}/channel/${encodeNames(channels !== null && channels !== void 0 ? channels : [], ',')}/uuid/${uuid}`;
+	    }
+	    get queryParameters() {
+	        const { channelGroups } = this.parameters;
+	        if (!channelGroups || channelGroups.length === 0)
+	            return {};
+	        return { 'channel-group': channelGroups.join(',') };
+	    }
+	}
+
+	/**
+	 * Set Presence State REST API module.
+	 */
+	// endregion
+	/**
+	 * Set `uuid` presence state request.
+	 *
+	 * @internal
+	 */
+	class SetPresenceStateRequest extends AbstractRequest {
+	    constructor(parameters) {
+	        super();
+	        this.parameters = parameters;
+	    }
+	    operation() {
+	        return RequestOperation$1.PNSetStateOperation;
+	    }
+	    validate() {
+	        const { keySet: { subscribeKey }, state, channels = [], channelGroups = [], } = this.parameters;
+	        if (!subscribeKey)
+	            return 'Missing Subscribe Key';
+	        if (!state)
+	            return 'Missing State';
+	        if ((channels === null || channels === void 0 ? void 0 : channels.length) === 0 && (channelGroups === null || channelGroups === void 0 ? void 0 : channelGroups.length) === 0)
+	            return 'Please provide a list of channels and/or channel-groups';
+	    }
+	    parse(response) {
+	        return __awaiter(this, void 0, void 0, function* () {
+	            const serviceResponse = this.deserializeResponse(response);
+	            if (!serviceResponse) {
+	                throw new PubNubError('Service response error, check status for details', createValidationError('Unable to deserialize service response'));
+	            }
+	            else if (serviceResponse.status >= 400)
+	                throw PubNubAPIError.create(response);
+	            return { state: serviceResponse.payload };
+	        });
+	    }
+	    get path() {
+	        const { keySet: { subscribeKey }, uuid, channels, } = this.parameters;
+	        return `/v2/presence/sub-key/${subscribeKey}/channel/${encodeNames(channels !== null && channels !== void 0 ? channels : [], ',')}/uuid/${encodeString(uuid)}/data`;
+	    }
+	    get queryParameters() {
+	        const { channelGroups, state } = this.parameters;
+	        const query = { state: JSON.stringify(state) };
+	        if (channelGroups && channelGroups.length !== 0)
+	            query['channel-group'] = channelGroups.join(',');
+	        return query;
+	    }
+	}
+
+	/**
+	 * Announce heartbeat REST API module.
+	 */
+	// endregion
+	/**
+	 * Announce `uuid` presence request.
+	 *
+	 * @internal
+	 */
+	class HeartbeatRequest extends AbstractRequest {
+	    constructor(parameters) {
+	        super();
+	        this.parameters = parameters;
+	    }
+	    operation() {
+	        return RequestOperation$1.PNHeartbeatOperation;
+	    }
+	    validate() {
+	        const { keySet: { subscribeKey }, channels = [], channelGroups = [], } = this.parameters;
+	        if (!subscribeKey)
+	            return 'Missing Subscribe Key';
+	        if (channels.length === 0 && channelGroups.length === 0)
+	            return 'Please provide a list of channels and/or channel-groups';
+	    }
+	    parse(response) {
+	        return __awaiter(this, void 0, void 0, function* () {
+	            const serviceResponse = this.deserializeResponse(response);
+	            if (!serviceResponse) {
+	                throw new PubNubError('Service response error, check status for details', createValidationError('Unable to deserialize service response'));
+	            }
+	            else if (serviceResponse.status >= 400)
+	                throw PubNubAPIError.create(response);
+	            return {};
+	        });
+	    }
+	    get path() {
+	        const { keySet: { subscribeKey }, channels, } = this.parameters;
+	        return `/v2/presence/sub-key/${subscribeKey}/channel/${encodeNames(channels !== null && channels !== void 0 ? channels : [], ',')}/heartbeat`;
+	    }
+	    get queryParameters() {
+	        const { channelGroups, state, heartbeat } = this.parameters;
+	        const query = { heartbeat: `${heartbeat}` };
+	        if (channelGroups && channelGroups.length !== 0)
+	            query['channel-group'] = channelGroups.join(',');
+	        if (state)
+	            query.state = JSON.stringify(state);
+	        return query;
+	    }
+	}
+
+	/**
+	 * Announce leave REST API module.
+	 */
+	// endregion
+	/**
+	 * Announce user leave request.
+	 *
+	 * @internal
+	 */
+	class PresenceLeaveRequest extends AbstractRequest {
+	    constructor(parameters) {
+	        super();
+	        this.parameters = parameters;
+	        if (this.parameters.channelGroups)
+	            this.parameters.channelGroups = Array.from(new Set(this.parameters.channelGroups));
+	        if (this.parameters.channels)
+	            this.parameters.channels = Array.from(new Set(this.parameters.channels));
+	    }
+	    operation() {
+	        return RequestOperation$1.PNUnsubscribeOperation;
+	    }
+	    validate() {
+	        const { keySet: { subscribeKey }, channels = [], channelGroups = [], } = this.parameters;
+	        if (!subscribeKey)
+	            return 'Missing Subscribe Key';
+	        if (channels.length === 0 && channelGroups.length === 0)
+	            return 'At least one `channel` or `channel group` should be provided.';
+	    }
+	    parse(response) {
+	        return __awaiter(this, void 0, void 0, function* () {
+	            const serviceResponse = this.deserializeResponse(response);
+	            if (!serviceResponse) {
+	                throw new PubNubError('Service response error, check status for details', createValidationError('Unable to deserialize service response'));
+	            }
+	            else if (serviceResponse.status >= 400)
+	                throw PubNubAPIError.create(response);
+	            return {};
+	        });
+	    }
+	    get path() {
+	        var _a;
+	        const { keySet: { subscribeKey }, channels, } = this.parameters;
+	        return `/v2/presence/sub-key/${subscribeKey}/channel/${encodeNames((_a = channels === null || channels === void 0 ? void 0 : channels.sort()) !== null && _a !== void 0 ? _a : [], ',')}/leave`;
+	    }
+	    get queryParameters() {
+	        const { channelGroups } = this.parameters;
+	        if (!channelGroups || channelGroups.length === 0)
+	            return {};
+	        return { 'channel-group': channelGroups.sort().join(',') };
+	    }
+	}
+
+	/**
+	 * `uuid` presence REST API module.
+	 */
+	// endregion
+	/**
+	 * Get `uuid` presence request.
+	 *
+	 * @internal
+	 */
+	class WhereNowRequest extends AbstractRequest {
+	    constructor(parameters) {
+	        super();
+	        this.parameters = parameters;
+	    }
+	    operation() {
+	        return RequestOperation$1.PNWhereNowOperation;
+	    }
+	    validate() {
+	        if (!this.parameters.keySet.subscribeKey)
+	            return 'Missing Subscribe Key';
+	    }
+	    parse(response) {
+	        return __awaiter(this, void 0, void 0, function* () {
+	            const serviceResponse = this.deserializeResponse(response);
+	            if (!serviceResponse) {
+	                throw new PubNubError('Service response error, check status for details', createValidationError('Unable to deserialize service response'));
+	            }
+	            else if (serviceResponse.status >= 400)
+	                throw PubNubAPIError.create(response);
+	            if (!serviceResponse.payload)
+	                return { channels: [] };
+	            return { channels: serviceResponse.payload.channels };
+	        });
+	    }
+	    get path() {
+	        const { keySet: { subscribeKey }, uuid, } = this.parameters;
+	        return `/v2/presence/sub-key/${subscribeKey}/uuid/${encodeString(uuid)}`;
+	    }
+	}
+
+	/**
+	 * Channels / channel groups presence REST API module.
+	 */
+	// --------------------------------------------------------
+	// ----------------------- Defaults -----------------------
+	// --------------------------------------------------------
+	// region Defaults
+	/**
+	 * Whether `uuid` should be included in response or not.
+	 */
+	const INCLUDE_UUID = true;
+	/**
+	 * Whether state associated with `uuid` should be included in response or not.
+	 */
+	const INCLUDE_STATE = false;
+	// endregion
+	/**
+	 * Channel presence request.
+	 *
+	 * @internal
+	 */
+	class HereNowRequest extends AbstractRequest {
+	    constructor(parameters) {
+	        var _a, _b, _c;
+	        var _d, _e, _f;
+	        super();
+	        this.parameters = parameters;
+	        // Apply defaults.
+	        (_a = (_d = this.parameters).queryParameters) !== null && _a !== void 0 ? _a : (_d.queryParameters = {});
+	        (_b = (_e = this.parameters).includeUUIDs) !== null && _b !== void 0 ? _b : (_e.includeUUIDs = INCLUDE_UUID);
+	        (_c = (_f = this.parameters).includeState) !== null && _c !== void 0 ? _c : (_f.includeState = INCLUDE_STATE);
+	    }
+	    operation() {
+	        const { channels = [], channelGroups = [] } = this.parameters;
+	        return channels.length === 0 && channelGroups.length === 0
+	            ? RequestOperation$1.PNGlobalHereNowOperation
+	            : RequestOperation$1.PNHereNowOperation;
+	    }
+	    validate() {
+	        if (!this.parameters.keySet.subscribeKey)
+	            return 'Missing Subscribe Key';
+	    }
+	    parse(response) {
+	        return __awaiter(this, void 0, void 0, function* () {
+	            var _a, _b;
+	            const serviceResponse = this.deserializeResponse(response);
+	            if (!serviceResponse) {
+	                throw new PubNubError('Service response error, check status for details', createValidationError('Unable to deserialize service response'));
+	            }
+	            else if (serviceResponse.status >= 400)
+	                throw PubNubAPIError.create(response);
+	            // Extract general presence information.
+	            const totalChannels = 'occupancy' in serviceResponse ? 1 : serviceResponse.payload.total_channels;
+	            const totalOccupancy = 'occupancy' in serviceResponse ? serviceResponse.occupancy : serviceResponse.payload.total_channels;
+	            const channelsPresence = {};
+	            let channels = {};
+	            // Remap single channel presence to multiple channels presence response.
+	            if ('occupancy' in serviceResponse) {
+	                const channel = this.parameters.channels[0];
+	                channels[channel] = { uuids: (_a = serviceResponse.uuids) !== null && _a !== void 0 ? _a : [], occupancy: totalOccupancy };
+	            }
+	            else
+	                channels = (_b = serviceResponse.payload.channels) !== null && _b !== void 0 ? _b : {};
+	            Object.keys(channels).forEach((channel) => {
+	                const channelEntry = channels[channel];
+	                channelsPresence[channel] = {
+	                    occupants: this.parameters.includeUUIDs
+	                        ? channelEntry.uuids.map((uuid) => {
+	                            if (typeof uuid === 'string')
+	                                return { uuid, state: null };
+	                            return uuid;
+	                        })
+	                        : [],
+	                    name: channel,
+	                    occupancy: channelEntry.occupancy,
+	                };
+	            });
+	            return {
+	                totalChannels,
+	                totalOccupancy,
+	                channels: channelsPresence,
+	            };
+	        });
+	    }
+	    get path() {
+	        const { keySet: { subscribeKey }, channels, channelGroups, } = this.parameters;
+	        let path = `/v2/presence/sub-key/${subscribeKey}`;
+	        if ((channels && channels.length > 0) || (channelGroups && channelGroups.length > 0))
+	            path += `/channel/${encodeNames(channels !== null && channels !== void 0 ? channels : [], ',')}`;
+	        return path;
+	    }
+	    get queryParameters() {
+	        const { channelGroups, includeUUIDs, includeState, queryParameters } = this.parameters;
+	        return Object.assign(Object.assign(Object.assign(Object.assign({}, (!includeUUIDs ? { disable_uuids: '1' } : {})), ((includeState !== null && includeState !== void 0 ? includeState : false) ? { state: '1' } : {})), (channelGroups && channelGroups.length > 0 ? { 'channel-group': channelGroups.join(',') } : {})), queryParameters);
+	    }
+	}
+
 	// endregion
 	// --------------------------------------------------------
 	// -------------------- Fetch Messages --------------------
@@ -5374,7 +5719,9 @@
 	     * @param callback - Request completion handler callback.
 	     */
 	    makeUnsubscribe(parameters, callback) {
-	        throw new Error('Unsubscription error: presence module disabled');
+	        {
+	            this.sendRequest(new PresenceLeaveRequest(Object.assign(Object.assign({}, parameters), { keySet: this._configuration.keySet })), callback);
+	        }
 	    }
 	    /**
 	     * Unsubscribe from all channels and groups.
@@ -5537,7 +5884,12 @@
 	     */
 	    hereNow(parameters, callback) {
 	        return __awaiter(this, void 0, void 0, function* () {
-	            throw new Error('Get Channel Here Now error: presence module disabled');
+	            {
+	                const request = new HereNowRequest(Object.assign(Object.assign({}, parameters), { keySet: this._configuration.keySet }));
+	                if (callback)
+	                    return this.sendRequest(request, callback);
+	                return this.sendRequest(request);
+	            }
 	        });
 	    }
 	    /**
@@ -5552,7 +5904,16 @@
 	     */
 	    whereNow(parameters, callback) {
 	        return __awaiter(this, void 0, void 0, function* () {
-	            throw new Error('Get UUID Here Now error: presence module disabled');
+	            var _a;
+	            {
+	                const request = new WhereNowRequest({
+	                    uuid: (_a = parameters.uuid) !== null && _a !== void 0 ? _a : this._configuration.userId,
+	                    keySet: this._configuration.keySet,
+	                });
+	                if (callback)
+	                    return this.sendRequest(request, callback);
+	                return this.sendRequest(request);
+	            }
 	        });
 	    }
 	    /**
@@ -5565,7 +5926,13 @@
 	     */
 	    getState(parameters, callback) {
 	        return __awaiter(this, void 0, void 0, function* () {
-	            throw new Error('Get UUID State error: presence module disabled');
+	            var _a;
+	            {
+	                const request = new GetPresenceStateRequest(Object.assign(Object.assign({}, parameters), { uuid: (_a = parameters.uuid) !== null && _a !== void 0 ? _a : this._configuration.userId, keySet: this._configuration.keySet }));
+	                if (callback)
+	                    return this.sendRequest(request, callback);
+	                return this.sendRequest(request);
+	            }
 	        });
 	    }
 	    /**
@@ -5578,7 +5945,33 @@
 	     */
 	    setState(parameters, callback) {
 	        return __awaiter(this, void 0, void 0, function* () {
-	            throw new Error('Set UUID State error: presence module disabled');
+	            var _a, _b;
+	            {
+	                const { keySet, userId: userId } = this._configuration;
+	                const heartbeat = this._configuration.getPresenceTimeout();
+	                let request;
+	                // Maintain presence information (if required).
+	                if (this._configuration.enableEventEngine && this.presenceState) {
+	                    const presenceState = this.presenceState;
+	                    (_a = parameters.channels) === null || _a === void 0 ? void 0 : _a.forEach((channel) => (presenceState[channel] = parameters.state));
+	                    if ('channelGroups' in parameters) {
+	                        (_b = parameters.channelGroups) === null || _b === void 0 ? void 0 : _b.forEach((group) => (presenceState[group] = parameters.state));
+	                    }
+	                }
+	                // Check whether state should be set with heartbeat or not.
+	                if ('withHeartbeat' in parameters) {
+	                    request = new HeartbeatRequest(Object.assign(Object.assign({}, parameters), { keySet, heartbeat }));
+	                }
+	                else {
+	                    request = new SetPresenceStateRequest(Object.assign(Object.assign({}, parameters), { keySet, uuid: userId }));
+	                }
+	                // Update state used by subscription manager.
+	                if (this.subscriptionManager)
+	                    this.subscriptionManager.setState(parameters);
+	                if (callback)
+	                    return this.sendRequest(request, callback);
+	                return this.sendRequest(request);
+	            }
 	        });
 	    }
 	    // endregion
@@ -5602,7 +5995,12 @@
 	     */
 	    heartbeat(parameters, callback) {
 	        return __awaiter(this, void 0, void 0, function* () {
-	            throw new Error('Announce UUID Presence error: presence module disabled');
+	            {
+	                const request = new HeartbeatRequest(Object.assign(Object.assign({}, parameters), { keySet: this._configuration.keySet }));
+	                if (callback)
+	                    return this.sendRequest(request, callback);
+	                return this.sendRequest(request);
+	            }
 	        });
 	    }
 	    // endregion
@@ -5613,7 +6011,8 @@
 	     * @param parameters - List of channels and groups where `join` event should be sent.
 	     */
 	    join(parameters) {
-	        throw new Error('Announce UUID Presence error: presence module disabled');
+	        var _a;
+	        (_a = this.presenceEventEngine) === null || _a === void 0 ? void 0 : _a.join(parameters);
 	    }
 	    // endregion
 	    // region Leave
@@ -5623,13 +6022,15 @@
 	     * @param parameters - List of channels and groups where `leave` event should be sent.
 	     */
 	    leave(parameters) {
-	        throw new Error('Announce UUID Leave error: presence module disabled');
+	        var _a;
+	        (_a = this.presenceEventEngine) === null || _a === void 0 ? void 0 : _a.leave(parameters);
 	    }
 	    /**
 	     * Announce user `leave` on all subscribed channels.
 	     */
 	    leaveAll() {
-	        throw new Error('Announce UUID Leave error: presence module disabled');
+	        var _a;
+	        (_a = this.presenceEventEngine) === null || _a === void 0 ? void 0 : _a.leaveAll();
 	    }
 	    /**
 	     * Grant token permission.

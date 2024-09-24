@@ -6,7 +6,7 @@
   "scripts": {
     "build": "npm run build:node && npm run build:web",
     "build:web": "rollup -c ./rollup.config.js --bundleConfigAsCjs",
-    "build:web:slim": "cross-env CRYPTO_MODULE=disabled SHARED_WORKER=disabled PUBLISH_MODULE=disabled SUBSCRIBE_EVENT_ENGINE_MODULE=disabled SUBSCRIBE_MANAGER_MODULE=enabled PRESENCE_MODULE=disabled PAM_MODULE=disabled CHANNEL_GROUPS_MODULE=disabled MESSAGE_PERSISTENCE_MODULE=disabled MOBILE_PUSH_MODULE=disabled APP_CONTEXT_MODULE=disabled FILE_SHARING_MODULE=disabled MESSAGE_REACTIONS_MODULE=disabled SUBSCRIBE_MODULE=enabled rollup -c ./rollup.config.js --bundleConfigAsCjs",
+    "build:web:slim": "cross-env CRYPTO_MODULE=disabled SHARED_WORKER=disabled PUBLISH_MODULE=disabled SUBSCRIBE_EVENT_ENGINE_MODULE=disabled SUBSCRIBE_MANAGER_MODULE=enabled PRESENCE_MODULE=enabled PAM_MODULE=disabled CHANNEL_GROUPS_MODULE=disabled MESSAGE_PERSISTENCE_MODULE=disabled MOBILE_PUSH_MODULE=disabled APP_CONTEXT_MODULE=disabled FILE_SHARING_MODULE=disabled MESSAGE_REACTIONS_MODULE=disabled SUBSCRIBE_MODULE=enabled rollup -c ./rollup.config.js --bundleConfigAsCjs",
     "build:node": "tsc -p tsconfig.json",
     "test": "npm run test:web && npm run test:node",
     "test:web": "karma start karma/web.config.cjs",
