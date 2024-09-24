@@ -6,6 +6,7 @@
   "scripts": {
     "build": "npm run build:node && npm run build:web",
     "build:web": "rollup -c ./rollup.config.js --bundleConfigAsCjs",
+    "build:web:subscribe-only": "cross-env CRYPTO_MODULE=disabled SHARED_WORKER=disabled PUBLISH_MODULE=disabled SUBSCRIBE_EVENT_ENGINE_MODULE=disabled SUBSCRIBE_MANAGER_MODULE=disabled PRESENCE_MODULE=disabled PAM_MODULE=disabled CHANNEL_GROUPS_MODULE=disabled MESSAGE_PERSISTENCE_MODULE=disabled MOBILE_PUSH_MODULE=disabled APP_CONTEXT_MODULE=disabled FILE_SHARING_MODULE=disabled MESSAGE_REACTIONS_MODULE=disabled SUBSCRIBE_MODULE=enabled rollup -c ./rollup.config.js --bundleConfigAsCjs",
     "build:node": "tsc -p tsconfig.json",
     "test": "npm run test:web && npm run test:node",
     "test:web": "karma start karma/web.config.cjs",
@@ -40,7 +41,6 @@
     "type": "git",
     "url": "git://github.com/pubnub/javascript.git"
   },
-
   "keywords": [
     "cloud",
     "publish",
@@ -90,6 +90,7 @@
     "chai": "^4.4.1",
     "chai-as-promised": "^7.1.1",
     "chai-nock": "^1.2.0",
+    "cross-env": "^7.0.3",
     "cucumber-pretty": "^6.0.1",
     "cucumber-tsflow": "^4.4.4",
     "es6-shim": "^0.35.8",
